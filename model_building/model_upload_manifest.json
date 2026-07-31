@@ -1,0 +1,11 @@
+{
+  "uploaded_at_utc": "2026-07-31T04:36:50.582235+00:00",
+  "model_file": "best_predictive_maintenance_model_v1.joblib",
+  "best_params": {
+    "xgbclassifier__learning_rate": 0.1,
+    "xgbclassifier__max_depth": 4,
+    "xgbclassifier__n_estimators": 100
+  },
+  "test_f1_score_class_1": 0.6853957636566332,
+  "test_accuracy": 0.6388533401586896
+}
