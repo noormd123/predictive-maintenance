@@ -1,6 +1,7 @@
-# Train XGBoost model with MLflow tracking; commit the best model into deployment/
+# Train XGBoost model with MLflow tracking; register best model on Hugging Face Hub
 import json
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import joblib
 import mlflow
 import pandas as pd
 import xgboost as xgb
+from huggingface_hub import CommitOperationAdd, HfApi, create_commit, create_repo
+from huggingface_hub.utils import RepositoryNotFoundError
 from sklearn.compose import make_column_transformer
 from sklearn.metrics import classification_report
 from sklearn.model_selection import GridSearchCV
@@ -15,26 +18,32 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 # Resolve paths relative to script location (local dev and CI)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-MODEL_DIR = PROJECT_ROOT / "deployment"
+MODEL_DIR = Path(__file__).resolve().parent
 MODEL_FILENAME = "best_predictive_maintenance_model_v1.joblib"
 MODEL_PATH = MODEL_DIR / MODEL_FILENAME
-MANIFEST_PATH = Path(__file__).resolve().parent / "model_upload_manifest.json"
+MANIFEST_FILENAME = "model_upload_manifest.json"
+MANIFEST_PATH = MODEL_DIR / MANIFEST_FILENAME
 
-TARGET_COL = "Engine Condition"
-RANDOM_STATE = 42
+os.environ.setdefault("MLFLOW_GIT_DISABLE", "1")
 
 # MLflow tracking for production and CI/CD runs
 mlflow.set_tracking_uri("http://localhost:5000")
 mlflow.set_experiment("predictive-maintenance-experiment")
 
-# Step 1: Load train and test data (Xtrain/Xtest/ytrain/ytest come from the previous job's artifact)
-Xtrain = pd.read_csv(DATA_DIR / "Xtrain.csv")
-Xtest = pd.read_csv(DATA_DIR / "Xtest.csv")
-ytrain = pd.read_csv(DATA_DIR / "ytrain.csv")[TARGET_COL]
-ytest = pd.read_csv(DATA_DIR / "ytest.csv")[TARGET_COL]
-print("Train and test data loaded successfully.")
+# Hugging Face dataset and model repositories
+DATASET_REPO = "noormd100/predictive-maintenance-data"
+MODEL_REPO = "noormd100/predictive-maintenance-model"
+TARGET_COL = "Engine Condition"
+RANDOM_STATE = 42
+
+api = HfApi(token=os.getenv("HF_TOKEN"))
+
+# Step 1: Load train and test data from Hugging Face Hub
+Xtrain = pd.read_csv(f"hf://datasets/{DATASET_REPO}/Xtrain.csv")
+Xtest = pd.read_csv(f"hf://datasets/{DATASET_REPO}/Xtest.csv")
+ytrain = pd.read_csv(f"hf://datasets/{DATASET_REPO}/ytrain.csv")[TARGET_COL]
+ytest = pd.read_csv(f"hf://datasets/{DATASET_REPO}/ytest.csv")[TARGET_COL]
+print("Train and test data loaded successfully from Hugging Face Hub.")
 
 feature_cols = Xtrain.columns.tolist()
 
@@ -106,20 +115,46 @@ with mlflow.start_run():
     print("\nTest Classification Report:")
     print(classification_report(ytest, y_pred_test))
 
-    # Step 5: Save the best model next to app.py so the Streamlit app can load it directly
+    # Step 5: Save best model locally and register on Hugging Face model hub
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(best_model, MODEL_PATH)
     mlflow.log_artifact(str(MODEL_PATH), artifact_path="model")
-    print(f"Model saved to {MODEL_PATH}")
+    print(f"Model saved locally as {MODEL_PATH}")
 
+    try:
+        api.repo_info(repo_id=MODEL_REPO, repo_type="model")
+        print(f"Model repo '{MODEL_REPO}' already exists. Using it.")
+    except RepositoryNotFoundError:
+        print(f"Model repo '{MODEL_REPO}' not found. Creating new model repo...")
+        create_repo(repo_id=MODEL_REPO, repo_type="model", private=False)
+        print(f"Model repo '{MODEL_REPO}' created.")
+
+    uploaded_at = datetime.now(timezone.utc).isoformat()
     manifest = {
-        "uploaded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "uploaded_at_utc": uploaded_at,
         "model_file": MODEL_FILENAME,
         "best_params": grid_search.best_params_,
         "test_f1_score_class_1": test_report["1"]["f1-score"],
         "test_accuracy": test_report["accuracy"],
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"Manifest written to {MANIFEST_PATH}")
+
+    create_commit(
+        repo_id=MODEL_REPO,
+        repo_type="model",
+        operations=[
+            CommitOperationAdd(
+                path_in_repo=MODEL_FILENAME,
+                path_or_fileobj=str(MODEL_PATH),
+            ),
+            CommitOperationAdd(
+                path_in_repo=MANIFEST_FILENAME,
+                path_or_fileobj=str(MANIFEST_PATH),
+            ),
+        ],
+        commit_message=f"Upload retrained model ({uploaded_at})",
+        token=os.getenv("HF_TOKEN"),
+    )
+    print(f"Model and manifest uploaded to {MODEL_REPO} at {uploaded_at}")
 
 print("Model building complete.")
