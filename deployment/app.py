@@ -1,11 +1,10 @@
 # Streamlit app for predictive maintenance (engine condition prediction)
+import os
+
+import joblib
 import pandas as pd
 import streamlit as st
-from huggingface_hub import hf_hub_download
-import joblib
 
-# Hugging Face model repository
-MODEL_REPO = "noormd100/predictive-maintenance-model"
 MODEL_FILENAME = "best_predictive_maintenance_model_v1.joblib"
 
 # Feature order must match Xtrain.csv used during training
@@ -22,13 +21,8 @@ FEATURE_COLS = [
 
 @st.cache_resource
 def load_model():
-    # Download and load the pre-trained XGBoost pipeline from the Hugging Face model hub
-    # (a public model repo, so no token is needed to read it from Streamlit Community Cloud)
-    model_path = hf_hub_download(
-        repo_id=MODEL_REPO,
-        filename=MODEL_FILENAME,
-        repo_type="model",
-    )
+    # Load the pre-trained XGBoost pipeline committed by the pipeline (sits next to this file)
+    model_path = os.path.join(os.path.dirname(__file__), MODEL_FILENAME)
     return joblib.load(model_path)
 
 
